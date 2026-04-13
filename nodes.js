@@ -1,65 +1,120 @@
-// nodes.js
-// All nodes live in a single flat array.
-// depth: 0 = region, 1 = area/room container, 2 = interior nodes.
-// Edges declare a type: 'contains' (parent→child) or 'adjacent' (traversal).
+// perception.js
+// describe() is situated — perception is weighted by distance from PLAYER_NODE.
+// Nodes closer to the player contribute more strongly to the description.
 
-const NODES = [
-  // ── Depth 0 — Region ───────────────────────────────────────────────────────
-  { id: 'valley',  depth: 0, tags: ['region'] },
+// Falloff multipliers by graph distance from PLAYER_NODE.
+// Distance 0 = player's current node, full weight.
+// Nodes beyond distance 2 are below perceptual threshold and ignored.
+const FALLOFF = { 0: 1.0, 1: 0.6, 2: 0.3 };
 
-  // ── Depth 1 — Area containers ─────────────────────────────────────────────
-  { id: 'cottage', depth: 1, tags: ['room'] },
+// BFS outward from a node through adjacent edges.
+// Returns a Map of { nodeId -> distance } for all reachable nodes
+// within the falloff range.
+function getDistanceMap(originId) {
+  const distances = new Map();
+  const queue = [{ id: originId, dist: 0 }];
+  distances.set(originId, 0);
+  const maxDist = Math.max(...Object.keys(FALLOFF).map(Number));
 
-  // ── Depth 2 — Interior nodes ──────────────────────────────────────────────
-  { id: 'floor',   depth: 2, tags: ['floor',   'below',   'stone'] },
-  { id: 'wall_n',  depth: 2, tags: ['wall',    'lateral', 'wood']  },
-  { id: 'wall_e',  depth: 2, tags: ['wall',    'lateral', 'wood']  },
-  { id: 'wall_w',  depth: 2, tags: ['wall',    'lateral', 'wood']  },
-  { id: 'door',    depth: 2, tags: ['door',    'wood']              },
-  { id: 'ceiling', depth: 2, tags: ['ceiling', 'above',   'wood']  },
-];
+  while (queue.length) {
+    const { id, dist } = queue.shift();
+    if (dist >= maxDist) continue;
 
-const EDGES = [
-  // Containment — hierarchy links.
-  { from: 'valley',  to: 'cottage', type: 'contains' },
-  { from: 'cottage', to: 'floor',   type: 'contains' },
-  { from: 'cottage', to: 'wall_n',  type: 'contains' },
-  { from: 'cottage', to: 'wall_e',  type: 'contains' },
-  { from: 'cottage', to: 'wall_w',  type: 'contains' },
-  { from: 'cottage', to: 'door',    type: 'contains' },
-  { from: 'cottage', to: 'ceiling', type: 'contains' },
+    for (const neighbor of getAdjacent(id)) {
+      if (!distances.has(neighbor.id)) {
+        distances.set(neighbor.id, dist + 1);
+        queue.push({ id: neighbor.id, dist: dist + 1 });
+      }
+    }
+  }
 
-  // Adjacency — traversal links within the interior.
-  { from: 'floor',  to: 'wall_n', type: 'adjacent' },
-  { from: 'floor',  to: 'wall_e', type: 'adjacent' },
-  { from: 'floor',  to: 'wall_w', type: 'adjacent' },
-  { from: 'floor',  to: 'door',   type: 'adjacent' },
-  { from: 'wall_n', to: 'wall_e', type: 'adjacent' },
-  { from: 'wall_e', to: 'wall_w', type: 'adjacent' },
-  { from: 'wall_w', to: 'door',   type: 'adjacent' },
-];
-
-// Player's current node id.
-let PLAYER_NODE = 'floor';
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-// Returns the immediate container (depth - 1) of a given node id.
-function getContainer(nodeId) {
-  const edge = EDGES.find(e => e.to === nodeId && e.type === 'contains');
-  return edge ? NODES.find(n => n.id === edge.from) : null;
+  return distances;
 }
 
-// Returns all nodes directly contained by a given node id.
-function getChildren(nodeId) {
-  return EDGES
-    .filter(e => e.from === nodeId && e.type === 'contains')
-    .map(e => NODES.find(n => n.id === e.to));
+function scoreNodes(nodes, distanceMap) {
+  const counts = {};
+
+  // Weight tag counts by falloff so distant nodes contribute less.
+  for (const node of nodes) {
+    const dist    = distanceMap.get(node.id) ?? null;
+    const falloff = dist !== null ? (FALLOFF[dist] ?? 0) : 1.0;
+    if (falloff === 0) continue;
+
+    for (const tag of node.tags)
+      counts[tag] = (counts[tag] || 0) + falloff;
+  }
+
+  const total = nodes.length;
+  const tagScores = {};
+
+  for (const tag of Object.keys(counts)) {
+    const def       = TAGS[tag] ?? { division: 'cosmetic', prominence: 0.5 };
+    const divBonus  = DIVISION_BONUS[def.division] ?? 0;
+    const intrinsic = def.division === 'structural' ? (def.priority ?? 0)
+                    : def.division === 'cosmetic'   ? (def.prominence ?? 0.5)
+                    : 0;
+    const majority  = counts[tag] / total;
+    tagScores[tag]  = divBonus + intrinsic + majority;
+  }
+
+  const nodeScores = nodes.map(node => {
+    const dist    = distanceMap.get(node.id) ?? null;
+    const falloff = dist !== null ? (FALLOFF[dist] ?? 0) : 1.0;
+    return {
+      ...node,
+      falloff,
+      score: node.tags.reduce((sum, t) => sum + (tagScores[t] ?? 0), 0) * falloff,
+    };
+  });
+
+  return { tagScores, nodeScores };
 }
 
-// Returns all nodes adjacent to a given node id (undirected).
-function getAdjacent(nodeId) {
-  return EDGES
-    .filter(e => e.type === 'adjacent' && (e.from === nodeId || e.to === nodeId))
-    .map(e => NODES.find(n => n.id === (e.from === nodeId ? e.to : e.from)));
+function describe() {
+  // Find the player's current node.
+  const playerNode = NODES.find(n => n.id === PLAYER_NODE);
+
+  // Walk up to the immediate container (depth 1 — the room/area).
+  const container = getContainer(PLAYER_NODE);
+
+  // The scale tag on the container sets the descriptive register.
+  const scaleTag = container?.tags.find(t => TAGS[t]?.division === 'scale') ?? 'room';
+
+  // Gather the sibling interior nodes (same container, depth 2).
+  const interiorNodes = container ? getChildren(container.id) : [playerNode];
+
+  // Build distance map from player's position through adjacent edges.
+  const distanceMap = getDistanceMap(PLAYER_NODE);
+
+  const { tagScores, nodeScores } = scoreNodes(interiorNodes, distanceMap);
+
+  // Top cosmetic tag overall — dominant material.
+  const topMaterial = Object.keys(tagScores)
+    .filter(t => TAGS[t]?.division === 'cosmetic')
+    .sort((a, b) => tagScores[b] - tagScores[a])[0] ?? '';
+
+  // Floor node — provides underfoot material and relational prep.
+  const floorNode = interiorNodes.find(n => n.tags.includes('floor'));
+  const floorMaterial   = floorNode?.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
+  const floorRelational = floorNode?.tags.find(t => TAGS[t]?.division === 'relational') ?? '';
+
+  const PREP = { below: 'underfoot', above: 'overhead', lateral: 'around you' };
+  const floorPrep = PREP[floorRelational] ?? '';
+
+  // Ambient line.
+  const ambient = `A ${topMaterial} ${scaleTag}, ${floorMaterial} ${floorPrep}.`;
+
+  // Callout — highest scoring non-floor node above threshold, weighted by distance.
+  const callout = nodeScores
+    .filter(n => !n.tags.includes('floor') && n.score >= CALLOUT_THRESHOLD)
+    .sort((a, b) => b.score - a.score)[0] ?? null;
+
+  let calloutLine = '';
+  if (callout) {
+    const struct = callout.tags.find(t => TAGS[t]?.division === 'structural') ?? '';
+    const mat    = callout.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
+    calloutLine  = `There is a ${mat} ${struct}.`;
+  }
+
+  return [ambient, calloutLine].filter(Boolean).join(' ');
 }
