@@ -1,6 +1,4 @@
 // perception.js
-// Scores tags by prominence, majority, and distance from player.
-// Assembles a description from the highest-scoring tags.
 
 function perceive() {
   const counts = {};
@@ -11,28 +9,34 @@ function perceive() {
 
   const total = NODES.length;
 
-  // Tag score = prominence + majority.
   const tagScores = {};
-  for (const tag of Object.keys(counts))
-    tagScores[tag] = (PROMINENCE[tag] ?? 0.5) + counts[tag] / total;
+  for (const tag of Object.keys(counts)) {
+    const def     = TAGS[tag] ?? { division: 'cosmetic', prominence: 0.5 };
+    const divBonus = DIVISION_BONUS[def.division] ?? 0;
+    const intrinsic = def.division === 'structural' ? def.priority : def.prominence;
+    const majority  = counts[tag] / total;
+    tagScores[tag]  = divBonus + intrinsic + majority;
+  }
 
   return { tagScores, counts };
 }
 
-function topTag(tagScores, category) {
-  return CATEGORIES[category]
-    .filter(t => tagScores[t] !== undefined)
-    .sort((a, b) => tagScores[b] - tagScores[a])[0] ?? null;
-}
-
 function describe() {
   const { tagScores } = perceive();
-  const material  = topTag(tagScores, 'material');
-  const surface   = topTag(tagScores, 'surface');
-  const condition = topTag(tagScores, 'condition');
-  const quality   = topTag(tagScores, 'quality');
 
-  const parts  = [material, condition, surface].filter(Boolean);
-  const suffix = quality ? `, ${quality}` : '';
-  return `The ${parts.join(' ')}${suffix}.`;
+  const structural = Object.keys(tagScores)
+    .filter(t => TAGS[t]?.division === 'structural')
+    .sort((a, b) => tagScores[b] - tagScores[a]);
+
+  const cosmetic = Object.keys(tagScores)
+    .filter(t => TAGS[t]?.division === 'cosmetic')
+    .sort((a, b) => tagScores[b] - tagScores[a]);
+
+  const primary   = structural[0] ?? null;   // e.g. door
+  const secondary = cosmetic[0]   ?? null;   // e.g. wood
+  const mention   = cosmetic[1]   ?? null;   // honorable mention e.g. stone
+
+  const parts = [secondary, primary].filter(Boolean);
+  const suffix = mention ? `, with ${mention}` : '';
+  return `A ${parts.join(' ')}${suffix}.`;
 }
