@@ -1,25 +1,25 @@
 // tags.js
-// Divisions: 'structural', 'cosmetic', 'relational' — more may be added later.
+// Divisions: 'structural', 'cosmetic', 'relational', 'scale'
 const TAGS = {
   // ── Structural ─────────────────────────────────────────────────────────────
   door:    { division: 'structural', priority: 4 },
   wall:    { division: 'structural', priority: 3 },
   floor:   { division: 'structural', priority: 2 },
   ceiling: { division: 'structural', priority: 1 },
+  stair:   { division: 'structural', priority: 3 },  // vertical traversal node
   // ── Relational ─────────────────────────────────────────────────────────────
-  // Describes the node's position from the player's perspective when at that node.
+  // Intrinsic to the node — describes position relative to an occupant.
   lateral: { division: 'relational' },
   below:   { division: 'relational' },
   above:   { division: 'relational' },
-  // 'ahead' removed — exits are agnostic, direction resolved by edge graph.
   // ── Cosmetic ───────────────────────────────────────────────────────────────
   wood:  { division: 'cosmetic', prominence: 0.2 },
   stone: { division: 'cosmetic', prominence: 0.3 },
   // ── Scale ──────────────────────────────────────────────────────────────────
-  // Container node tags. Set the descriptive register at each scale.
-  room:     { division: 'scale' },
-  area:     { division: 'scale' },
-  region:   { division: 'scale' },
+  // Container node tags — set the descriptive register at each depth level.
+  room:   { division: 'scale' },
+  area:   { division: 'scale' },
+  region: { division: 'scale' },
 };
 
 const DIVISION_BONUS = {
