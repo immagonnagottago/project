@@ -1,26 +1,38 @@
 // perception.js
-// describe() is situated — perception is weighted by distance from PLAYER_NODE.
-// Nodes closer to the player contribute more strongly to the description.
+// Perception is weighted by two independent distance axes:
+//   FALLOFF_H — horizontal distance through the xy lattice.
+//   FALLOFF_V — vertical distance through z levels.
+// Final weight = H_falloff * V_falloff, so a ceiling two z-levels up
+// but directly overhead scores differently from a wall two steps away.
 
-// Falloff multipliers by graph distance from PLAYER_NODE.
-// Distance 0 = player's current node, full weight.
-// Nodes beyond distance 2 are below perceptual threshold and ignored.
-const FALLOFF = { 0: 1.0, 1: 0.6, 2: 0.3 };
+// Horizontal falloff — how quickly awareness fades across the floor plane.
+const FALLOFF_H = { 0: 1.0, 1: 0.6, 2: 0.3 };
 
-// BFS outward from a node through adjacent edges.
-// Returns a Map of { nodeId -> distance } for all reachable nodes
-// within the falloff range.
-function getDistanceMap(originId) {
+// Vertical falloff — how quickly awareness fades across z levels.
+// Ceiling and floor are always "present" even at z distance 2
+// because they bound the space — so vertical falloff is gentler.
+const FALLOFF_V = { 0: 1.0, 1: 0.8, 2: 0.6 };
+
+const MAX_H = Math.max(...Object.keys(FALLOFF_H).map(Number));
+const MAX_V = Math.max(...Object.keys(FALLOFF_V).map(Number));
+
+// BFS outward from originId through horizontal adjacency (same z, implicit lattice).
+// Returns a Map of { nodeId -> horizontalDistance }.
+function getHDistanceMap(originId) {
   const distances = new Map();
-  const queue = [{ id: originId, dist: 0 }];
+  const queue     = [{ id: originId, dist: 0 }];
   distances.set(originId, 0);
-  const maxDist = Math.max(...Object.keys(FALLOFF).map(Number));
 
   while (queue.length) {
     const { id, dist } = queue.shift();
-    if (dist >= maxDist) continue;
+    if (dist >= MAX_H) continue;
 
     for (const neighbor of getAdjacent(id)) {
+      // Only follow horizontal neighbors for this pass.
+      const origin = NODES.find(n => n.id === originId);
+      const nb     = NODES.find(n => n.id === neighbor.id);
+      if (nb?.z !== origin?.z) continue;
+
       if (!distances.has(neighbor.id)) {
         distances.set(neighbor.id, dist + 1);
         queue.push({ id: neighbor.id, dist: dist + 1 });
@@ -31,20 +43,28 @@ function getDistanceMap(originId) {
   return distances;
 }
 
-function scoreNodes(nodes, distanceMap) {
-  const counts = {};
+function scoreNodes(nodes, hDistMap) {
+  const playerNode = NODES.find(n => n.id === PLAYER_NODE);
+  const counts     = {};
 
-  // Weight tag counts by falloff so distant nodes contribute less.
   for (const node of nodes) {
-    const dist    = distanceMap.get(node.id) ?? null;
-    const falloff = dist !== null ? (FALLOFF[dist] ?? 0) : 1.0;
+    const hDist   = hDistMap.get(node.id) ?? Infinity;
+    const vDist   = node.z != null && playerNode.z != null
+                  ? Math.abs(node.z - playerNode.z)
+                  : 0;
+
+    const hFall   = FALLOFF_H[hDist] ?? 0;
+    const vFall   = FALLOFF_V[vDist] ?? 0;
+    const falloff = hFall * vFall;
+
     if (falloff === 0) continue;
+    node._falloff = falloff; // stash for nodeScores below
 
     for (const tag of node.tags)
       counts[tag] = (counts[tag] || 0) + falloff;
   }
 
-  const total = nodes.length;
+  const total    = nodes.length;
   const tagScores = {};
 
   for (const tag of Object.keys(counts)) {
@@ -57,54 +77,60 @@ function scoreNodes(nodes, distanceMap) {
     tagScores[tag]  = divBonus + intrinsic + majority;
   }
 
-  const nodeScores = nodes.map(node => {
-    const dist    = distanceMap.get(node.id) ?? null;
-    const falloff = dist !== null ? (FALLOFF[dist] ?? 0) : 1.0;
-    return {
-      ...node,
-      falloff,
-      score: node.tags.reduce((sum, t) => sum + (tagScores[t] ?? 0), 0) * falloff,
-    };
-  });
+  const nodeScores = nodes.map(node => ({
+    ...node,
+    score: (node._falloff ?? 0) *
+           node.tags.reduce((sum, t) => sum + (tagScores[t] ?? 0), 0),
+  }));
 
   return { tagScores, nodeScores };
 }
 
 function describe() {
-  // Find the player's current node.
   const playerNode = NODES.find(n => n.id === PLAYER_NODE);
 
-  // Walk up to the immediate container (depth 1 — the room/area).
+  // Walk up to the immediate container.
   const container = getContainer(PLAYER_NODE);
 
-  // The scale tag on the container sets the descriptive register.
+  // Scale tag sets the descriptive register.
   const scaleTag = container?.tags.find(t => TAGS[t]?.division === 'scale') ?? 'room';
 
-  // Gather the sibling interior nodes (same container, depth 2).
+  // All interior nodes in this container.
   const interiorNodes = container ? getChildren(container.id) : [playerNode];
 
-  // Build distance map from player's position through adjacent edges.
-  const distanceMap = getDistanceMap(PLAYER_NODE);
+  // Horizontal distance map from player through the xy lattice.
+  const hDistMap = getHDistanceMap(PLAYER_NODE);
 
-  const { tagScores, nodeScores } = scoreNodes(interiorNodes, distanceMap);
+  // Nodes not reachable horizontally get hDist = Infinity — they still
+  // score via vertical falloff alone (ceiling, floor from a wall node, etc).
+  // Give them a horizontal falloff of 1.0 if they're in the same z column,
+  // otherwise treat as max horizontal distance.
+  for (const node of interiorNodes) {
+    if (!hDistMap.has(node.id)) {
+      const sameColumn = node.x === playerNode.x && node.y === playerNode.y;
+      hDistMap.set(node.id, sameColumn ? 0 : MAX_H);
+    }
+  }
 
-  // Top cosmetic tag overall — dominant material.
+  const { tagScores, nodeScores } = scoreNodes(interiorNodes, hDistMap);
+
+  // Dominant cosmetic tag.
   const topMaterial = Object.keys(tagScores)
     .filter(t => TAGS[t]?.division === 'cosmetic')
     .sort((a, b) => tagScores[b] - tagScores[a])[0] ?? '';
 
-  // Floor node — provides underfoot material and relational prep.
-  const floorNode = interiorNodes.find(n => n.tags.includes('floor'));
+  // Floor node — underfoot material and relational prep.
+  const floorNode       = interiorNodes.find(n => n.tags.includes('floor'));
   const floorMaterial   = floorNode?.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
   const floorRelational = floorNode?.tags.find(t => TAGS[t]?.division === 'relational') ?? '';
 
-  const PREP = { below: 'underfoot', above: 'overhead', lateral: 'around you' };
+  const PREP    = { below: 'underfoot', above: 'overhead', lateral: 'around you' };
   const floorPrep = PREP[floorRelational] ?? '';
 
   // Ambient line.
   const ambient = `A ${topMaterial} ${scaleTag}, ${floorMaterial} ${floorPrep}.`;
 
-  // Callout — highest scoring non-floor node above threshold, weighted by distance.
+  // Callout — highest scoring non-floor node above threshold.
   const callout = nodeScores
     .filter(n => !n.tags.includes('floor') && n.score >= CALLOUT_THRESHOLD)
     .sort((a, b) => b.score - a.score)[0] ?? null;
