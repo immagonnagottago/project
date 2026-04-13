@@ -1,6 +1,6 @@
 // perception.js
 
-function perceive() {
+function scoreNodes() {
   const counts = {};
 
   for (const node of NODES)
@@ -11,32 +11,57 @@ function perceive() {
 
   const tagScores = {};
   for (const tag of Object.keys(counts)) {
-    const def     = TAGS[tag] ?? { division: 'cosmetic', prominence: 0.5 };
-    const divBonus = DIVISION_BONUS[def.division] ?? 0;
-    const intrinsic = def.division === 'structural' ? def.priority : def.prominence;
+    const def       = TAGS[tag] ?? { division: 'cosmetic', prominence: 0.5 };
+    const divBonus  = DIVISION_BONUS[def.division] ?? 0;
+    const intrinsic = def.division === 'structural' ? (def.priority ?? 0)
+                    : def.division === 'cosmetic'   ? (def.prominence ?? 0.5)
+                    : 0;
     const majority  = counts[tag] / total;
     tagScores[tag]  = divBonus + intrinsic + majority;
   }
 
-  return { tagScores, counts };
+  const nodeScores = NODES.map(node => ({
+    ...node,
+    score: node.tags.reduce((sum, t) => sum + (tagScores[t] ?? 0), 0),
+  }));
+
+  return { tagScores, nodeScores };
 }
 
 function describe() {
-  const { tagScores } = perceive();
+  const { tagScores, nodeScores } = scoreNodes();
+  const area = AREA.tags[0]; // e.g. 'room'
 
-  const structural = Object.keys(tagScores)
-    .filter(t => TAGS[t]?.division === 'structural')
-    .sort((a, b) => tagScores[b] - tagScores[a]);
-
-  const cosmetic = Object.keys(tagScores)
+  // Top cosmetic tag overall — defines the dominant material.
+  const topMaterial = Object.keys(tagScores)
     .filter(t => TAGS[t]?.division === 'cosmetic')
-    .sort((a, b) => tagScores[b] - tagScores[a]);
+    .sort((a, b) => tagScores[b] - tagScores[a])[0] ?? '';
 
-  const primary   = structural[0] ?? null;   // e.g. door
-  const secondary = cosmetic[0]   ?? null;   // e.g. wood
-  const mention   = cosmetic[1]   ?? null;   // honorable mention e.g. stone
+  // Floor node — provides the positional/material for the second slot.
+  const floorNode = NODES.find(n => n.tags.includes('floor'));
+  const floorMaterial = floorNode?.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
+  const floorRelational = floorNode?.tags.find(t => TAGS[t]?.division === 'relational') ?? '';
 
-  const parts = [secondary, primary].filter(Boolean);
-  const suffix = mention ? `, with ${mention}` : '';
-  return `A ${parts.join(' ')}${suffix}.`;
+  // Relational tag → preposition phrase.
+  const PREP = { below: 'underfoot', above: 'overhead', lateral: 'around you', ahead: 'ahead' };
+  const floorPrep = PREP[floorRelational] ?? '';
+
+  // Ambient line.
+  const ambient = `A ${topMaterial} ${area}, ${floorMaterial} ${floorPrep}.`;
+
+  // Callout — highest scoring node that clears the threshold, excluding floor.
+  const callout = nodeScores
+    .filter(n => !n.tags.includes('floor') && n.score >= CALLOUT_THRESHOLD)
+    .sort((a, b) => b.score - a.score)[0] ?? null;
+
+  let calloutLine = '';
+  if (callout) {
+    const struct = callout.tags.find(t => TAGS[t]?.division === 'structural') ?? '';
+    const mat    = callout.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
+    const rel    = callout.tags.find(t => TAGS[t]?.division === 'relational') ?? '';
+    const prep   = PREP[rel] ?? '';
+    calloutLine  = `There is a ${mat} ${struct}${prep ? ' ' + prep : ''}.`;
+  }
+
+  return [ambient, calloutLine].filter(Boolean).join(' ');
 }
