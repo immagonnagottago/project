@@ -1,26 +1,27 @@
 // perception.js
+// describe() is now situated — it reads the player's current container
+// via the edge graph rather than a hardcoded AREA singleton.
 
-function scoreNodes() {
+function scoreNodes(nodes) {
   const counts = {};
-
-  for (const node of NODES)
+  for (const node of nodes)
     for (const tag of node.tags)
       counts[tag] = (counts[tag] || 0) + 1;
 
-  const total = NODES.length;
-
+  const total = nodes.length;
   const tagScores = {};
+
   for (const tag of Object.keys(counts)) {
-    const def       = TAGS[tag] ?? { division: 'cosmetic', prominence: 0.5 };
-    const divBonus  = DIVISION_BONUS[def.division] ?? 0;
+    const def      = TAGS[tag] ?? { division: 'cosmetic', prominence: 0.5 };
+    const divBonus = DIVISION_BONUS[def.division] ?? 0;
     const intrinsic = def.division === 'structural' ? (def.priority ?? 0)
                     : def.division === 'cosmetic'   ? (def.prominence ?? 0.5)
                     : 0;
-    const majority  = counts[tag] / total;
-    tagScores[tag]  = divBonus + intrinsic + majority;
+    const majority = counts[tag] / total;
+    tagScores[tag] = divBonus + intrinsic + majority;
   }
 
-  const nodeScores = NODES.map(node => ({
+  const nodeScores = nodes.map(node => ({
     ...node,
     score: node.tags.reduce((sum, t) => sum + (tagScores[t] ?? 0), 0),
   }));
@@ -29,27 +30,37 @@ function scoreNodes() {
 }
 
 function describe() {
-  const { tagScores, nodeScores } = scoreNodes();
-  const area = AREA.tags[0]; // e.g. 'room'
+  // Find the player's current node.
+  const playerNode = NODES.find(n => n.id === PLAYER_NODE);
 
-  // Top cosmetic tag overall — defines the dominant material.
+  // Walk up to the immediate container (depth 1 — the room/area).
+  const container = getContainer(PLAYER_NODE);
+
+  // The scale tag on the container sets the descriptive register.
+  const scalTag = container?.tags.find(t => TAGS[t]?.division === 'scale') ?? 'room';
+
+  // Gather the sibling interior nodes (same container, depth 2).
+  const interiorNodes = container ? getChildren(container.id) : [playerNode];
+
+  const { tagScores, nodeScores } = scoreNodes(interiorNodes);
+
+  // Top cosmetic tag overall — dominant material.
   const topMaterial = Object.keys(tagScores)
     .filter(t => TAGS[t]?.division === 'cosmetic')
     .sort((a, b) => tagScores[b] - tagScores[a])[0] ?? '';
 
-  // Floor node — provides the positional/material for the second slot.
-  const floorNode = NODES.find(n => n.tags.includes('floor'));
-  const floorMaterial = floorNode?.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
+  // Floor node — provides underfoot material and relational prep.
+  const floorNode = interiorNodes.find(n => n.tags.includes('floor'));
+  const floorMaterial  = floorNode?.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
   const floorRelational = floorNode?.tags.find(t => TAGS[t]?.division === 'relational') ?? '';
 
-  // Relational tag → preposition phrase.
-  const PREP = { below: 'underfoot', above: 'overhead', lateral: 'around you', ahead: 'ahead' };
+  const PREP = { below: 'underfoot', above: 'overhead', lateral: 'around you' };
   const floorPrep = PREP[floorRelational] ?? '';
 
   // Ambient line.
-  const ambient = `A ${topMaterial} ${area}, ${floorMaterial} ${floorPrep}.`;
+  const ambient = `A ${topMaterial} ${scalTag}, ${floorMaterial} ${floorPrep}.`;
 
-  // Callout — highest scoring node that clears the threshold, excluding floor.
+  // Callout — highest scoring non-floor node above threshold.
   const callout = nodeScores
     .filter(n => !n.tags.includes('floor') && n.score >= CALLOUT_THRESHOLD)
     .sort((a, b) => b.score - a.score)[0] ?? null;
@@ -58,9 +69,7 @@ function describe() {
   if (callout) {
     const struct = callout.tags.find(t => TAGS[t]?.division === 'structural') ?? '';
     const mat    = callout.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
-    const rel    = callout.tags.find(t => TAGS[t]?.division === 'relational') ?? '';
-    const prep   = PREP[rel] ?? '';
-    calloutLine  = `There is a ${mat} ${struct}${prep ? ' ' + prep : ''}.`;
+    calloutLine  = `There is a ${mat} ${struct}.`;
   }
 
   return [ambient, calloutLine].filter(Boolean).join(' ');
