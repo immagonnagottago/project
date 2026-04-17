@@ -7,7 +7,6 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     html, body {
       height: 100%;
       background: #0c0c0c;
@@ -17,9 +16,7 @@
       line-height: 1.6;
       overflow: hidden;
     }
-
     .shell { display: flex; flex-direction: column; height: 100vh; }
-
     .feed {
       flex: 1;
       overflow-y: auto;
@@ -29,12 +26,9 @@
       scrollbar-width: thin;
       scrollbar-color: #222 transparent;
     }
-
     .feed::-webkit-scrollbar { width: 4px; }
     .feed::-webkit-scrollbar-thumb { background: #222; border-radius: 2px; }
-
     .line { padding: 1px 0; word-break: break-word; }
-
     .inputbar {
       flex-shrink: 0;
       display: flex;
@@ -44,9 +38,7 @@
       padding: 0 14px;
       height: 36px;
     }
-
     .prompt { color: #444; user-select: none; }
-
     #cmd {
       flex: 1;
       background: transparent;
@@ -57,7 +49,6 @@
       font-size: 13px;
       caret-color: #777;
     }
-
     #cmd::placeholder { color: #2a2a2a; }
   </style>
 </head>
@@ -69,11 +60,9 @@
     <input id="cmd" type="text" placeholder="enter command…" autocomplete="off" spellcheck="false" />
   </footer>
 </div>
-
 <script src="tags.js"></script>
 <script src="nodes.js"></script>
 <script src="perception.js"></script>
-
 <script>
   const feed  = document.getElementById('feed');
   const input = document.getElementById('cmd');
@@ -91,7 +80,7 @@
     const val = input.value.trim();
     if (!val) return;
     appendLine(val);
-    // TODO: send val to server
+    // TODO: send val to command parser
     input.value = '';
   });
 
