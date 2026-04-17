@@ -3,6 +3,11 @@
 //   FALLOFF_H — horizontal distance through the xy lattice.
 //   FALLOFF_V — vertical distance through z levels.
 // Final weight = H_falloff * V_falloff.
+//
+// Note: topMaterial for the ambient line is a flat majority count across
+// all nodes in the container — unweighted by proximity — because it
+// describes the room's overall character, not the player's immediate surface.
+// Proximity weighting governs callouts only.
 
 const FALLOFF_H = { 0: 1.0, 1: 0.6, 2: 0.3 };
 const FALLOFF_V = { 0: 1.0, 1: 0.8, 2: 0.6 };
@@ -22,7 +27,7 @@ function getHDistanceMap(originId) {
 
     for (const neighbor of getAdjacent(id)) {
       const nb = NODES.find(n => n.id === neighbor.id);
-      if (nb?.z !== origin?.z) continue; // horizontal pass only
+      if (nb?.z !== origin?.z) continue;
       if (!distances.has(neighbor.id)) {
         distances.set(neighbor.id, dist + 1);
         queue.push({ id: neighbor.id, dist: dist + 1 });
@@ -82,7 +87,7 @@ function describe() {
   const interiorNodes = container ? getChildren(container.id) : [playerNode];
   const hDistMap      = getHDistanceMap(PLAYER_NODE);
 
-  // Nodes not reachable horizontally — assign hDist 0 if same column, else MAX_H.
+  // Nodes not reachable horizontally — same column gets hDist 0, else MAX_H.
   for (const node of interiorNodes) {
     if (!hDistMap.has(node.id)) {
       const sameColumn = node.x === playerNode.x && node.y === playerNode.y;
@@ -92,10 +97,17 @@ function describe() {
 
   const { tagScores, nodeScores } = scoreNodes(interiorNodes, hDistMap);
 
-  // Dominant cosmetic tag.
-  const topMaterial = Object.keys(tagScores)
-    .filter(t => TAGS[t]?.division === 'cosmetic')
-    .sort((a, b) => tagScores[b] - tagScores[a])[0] ?? '';
+  // Flat majority count across all nodes — unweighted.
+  // Determines the room's dominant material for the ambient line.
+  const materialCount = {};
+  for (const node of interiorNodes) {
+    for (const tag of node.tags) {
+      if (TAGS[tag]?.division === 'cosmetic')
+        materialCount[tag] = (materialCount[tag] || 0) + 1;
+    }
+  }
+  const topMaterial = Object.keys(materialCount)
+    .sort((a, b) => materialCount[b] - materialCount[a])[0] ?? '';
 
   // Floor — underfoot material and relational prep.
   const floorNode       = interiorNodes.find(n => n.tags.includes('floor'));
