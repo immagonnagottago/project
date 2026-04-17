@@ -1,120 +1,128 @@
-// perception.js
-// describe() is situated — perception is weighted by distance from PLAYER_NODE.
-// Nodes closer to the player contribute more strongly to the description.
+// nodes.js
+// Geometry model:
+//   - Nodes at the same depth MAY have { x, y, z } coordinates.
+//   - Horizontal adjacency (same z) is IMPLICIT — no edge needed.
+//     Two nodes are horizontally adjacent if they share a container,
+//     have coordinates, and their x/y distance is exactly 1 step.
+//   - Vertical adjacency (z change) is EXPLICIT — requires an edge.
+//     You need a stair, ladder, trapdoor, etc. to move between z levels.
+//   - Non-euclidean connections are also explicit edges, ignoring geometry.
+//
+// Edge types:
+//   'contains'  — hierarchy: parent → child (depth n → depth n+1)
+//   'vertical'  — traversal: connects nodes across z levels (requires stair etc.)
+//   'special'   — traversal: non-euclidean, ignores lattice geometry entirely
 
-// Falloff multipliers by graph distance from PLAYER_NODE.
-// Distance 0 = player's current node, full weight.
-// Nodes beyond distance 2 are below perceptual threshold and ignored.
-const FALLOFF = { 0: 1.0, 1: 0.6, 2: 0.3 };
+const NODES = [
+  // ── Depth 0 — Region ───────────────────────────────────────────────────────
+  { id: 'valley',  depth: 0, tags: ['region'] },
 
-// BFS outward from a node through adjacent edges.
-// Returns a Map of { nodeId -> distance } for all reachable nodes
-// within the falloff range.
-function getDistanceMap(originId) {
-  const distances = new Map();
-  const queue = [{ id: originId, dist: 0 }];
-  distances.set(originId, 0);
-  const maxDist = Math.max(...Object.keys(FALLOFF).map(Number));
+  // ── Depth 1 — Area containers ─────────────────────────────────────────────
+  { id: 'cottage', depth: 1, tags: ['room'] },
 
-  while (queue.length) {
-    const { id, dist } = queue.shift();
-    if (dist >= maxDist) continue;
+  // ── Depth 2 — Interior nodes ──────────────────────────────────────────────
+  // Positioned on a small 3x1 lattice.
+  // z0 = floor level, z1 = standing/wall level, z2 = ceiling level.
+  //
+  //   z2:  [ ceiling         ]
+  //   z1:  [ wall_w ][ wall_e ][ door ]
+  //   z0:  [ floor           ]
+  //
+  // x,y place nodes on the horizontal plane.
+  // Walls and door share z1; floor is z0; ceiling is z2.
 
-    for (const neighbor of getAdjacent(id)) {
-      if (!distances.has(neighbor.id)) {
-        distances.set(neighbor.id, dist + 1);
-        queue.push({ id: neighbor.id, dist: dist + 1 });
-      }
+  { id: 'floor',   depth: 2, tags: ['floor',   'below',   'stone'], x: 1, y: 1, z: 0 },
+  { id: 'wall_w',  depth: 2, tags: ['wall',    'lateral', 'wood'],  x: 0, y: 1, z: 1 },
+  { id: 'wall_e',  depth: 2, tags: ['wall',    'lateral', 'wood'],  x: 2, y: 1, z: 1 },
+  { id: 'door',    depth: 2, tags: ['door',               'wood'],  x: 1, y: 2, z: 1 },
+  { id: 'ceiling', depth: 2, tags: ['ceiling', 'above',   'wood'],  x: 1, y: 1, z: 2 },
+];
+
+const EDGES = [
+  // ── Containment ────────────────────────────────────────────────────────────
+  { from: 'valley',  to: 'cottage', type: 'contains' },
+  { from: 'cottage', to: 'floor',   type: 'contains' },
+  { from: 'cottage', to: 'wall_w',  type: 'contains' },
+  { from: 'cottage', to: 'wall_e',  type: 'contains' },
+  { from: 'cottage', to: 'door',    type: 'contains' },
+  { from: 'cottage', to: 'ceiling', type: 'contains' },
+
+  // ── Vertical traversal ─────────────────────────────────────────────────────
+  // None yet — no stairs in this space.
+  // Example of how one would look:
+  // { from: 'floor', to: 'loft_floor', type: 'vertical' },
+];
+
+// Player's current node id.
+let PLAYER_NODE = 'floor';
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// Returns the immediate container (depth - 1) of a given node id.
+function getContainer(nodeId) {
+  const edge = EDGES.find(e => e.to === nodeId && e.type === 'contains');
+  return edge ? NODES.find(n => n.id === edge.from) : null;
+}
+
+// Returns all nodes directly contained by a given node id.
+function getChildren(nodeId) {
+  return EDGES
+    .filter(e => e.from === nodeId && e.type === 'contains')
+    .map(e => NODES.find(n => n.id === e.to));
+}
+
+// Returns the horizontal step distance between two nodes (ignoring z).
+// Returns Infinity if either node lacks coordinates.
+function xyDistance(a, b) {
+  if (a.x == null || b.x == null) return Infinity;
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+// Returns the vertical distance between two nodes.
+// Returns Infinity if either node lacks coordinates.
+function zDistance(a, b) {
+  if (a.z == null || b.z == null) return Infinity;
+  return Math.abs(a.z - b.z);
+}
+
+// Returns all nodes adjacent to a given node id.
+// Adjacency is:
+//   - IMPLICIT for same-z nodes in the same container within 1 xy step.
+//   - EXPLICIT for vertical and special edges regardless of geometry.
+function getAdjacent(nodeId) {
+  const node      = NODES.find(n => n.id === nodeId);
+  const container = getContainer(nodeId);
+  const siblings  = container ? getChildren(container.id) : [];
+  const results   = new Map();
+
+  // Implicit horizontal neighbors — same z, xy distance exactly 1.
+  for (const sibling of siblings) {
+    if (sibling.id === nodeId) continue;
+    if (sibling.z === node.z && xyDistance(node, sibling) === 1) {
+      results.set(sibling.id, sibling);
     }
   }
 
-  return distances;
+  // Explicit vertical and special edges (undirected).
+  for (const edge of EDGES) {
+    if (edge.type === 'contains') continue;
+    if (edge.from === nodeId) {
+      const target = NODES.find(n => n.id === edge.to);
+      if (target) results.set(target.id, target);
+    }
+    if (edge.to === nodeId) {
+      const target = NODES.find(n => n.id === edge.from);
+      if (target) results.set(target.id, target);
+    }
+  }
+
+  return [...results.values()];
 }
 
-function scoreNodes(nodes, distanceMap) {
-  const counts = {};
-
-  // Weight tag counts by falloff so distant nodes contribute less.
-  for (const node of nodes) {
-    const dist    = distanceMap.get(node.id) ?? null;
-    const falloff = dist !== null ? (FALLOFF[dist] ?? 0) : 1.0;
-    if (falloff === 0) continue;
-
-    for (const tag of node.tags)
-      counts[tag] = (counts[tag] || 0) + falloff;
-  }
-
-  const total = nodes.length;
-  const tagScores = {};
-
-  for (const tag of Object.keys(counts)) {
-    const def       = TAGS[tag] ?? { division: 'cosmetic', prominence: 0.5 };
-    const divBonus  = DIVISION_BONUS[def.division] ?? 0;
-    const intrinsic = def.division === 'structural' ? (def.priority ?? 0)
-                    : def.division === 'cosmetic'   ? (def.prominence ?? 0.5)
-                    : 0;
-    const majority  = counts[tag] / total;
-    tagScores[tag]  = divBonus + intrinsic + majority;
-  }
-
-  const nodeScores = nodes.map(node => {
-    const dist    = distanceMap.get(node.id) ?? null;
-    const falloff = dist !== null ? (FALLOFF[dist] ?? 0) : 1.0;
-    return {
-      ...node,
-      falloff,
-      score: node.tags.reduce((sum, t) => sum + (tagScores[t] ?? 0), 0) * falloff,
-    };
-  });
-
-  return { tagScores, nodeScores };
-}
-
-function describe() {
-  // Find the player's current node.
-  const playerNode = NODES.find(n => n.id === PLAYER_NODE);
-
-  // Walk up to the immediate container (depth 1 — the room/area).
-  const container = getContainer(PLAYER_NODE);
-
-  // The scale tag on the container sets the descriptive register.
-  const scaleTag = container?.tags.find(t => TAGS[t]?.division === 'scale') ?? 'room';
-
-  // Gather the sibling interior nodes (same container, depth 2).
-  const interiorNodes = container ? getChildren(container.id) : [playerNode];
-
-  // Build distance map from player's position through adjacent edges.
-  const distanceMap = getDistanceMap(PLAYER_NODE);
-
-  const { tagScores, nodeScores } = scoreNodes(interiorNodes, distanceMap);
-
-  // Top cosmetic tag overall — dominant material.
-  const topMaterial = Object.keys(tagScores)
-    .filter(t => TAGS[t]?.division === 'cosmetic')
-    .sort((a, b) => tagScores[b] - tagScores[a])[0] ?? '';
-
-  // Floor node — provides underfoot material and relational prep.
-  const floorNode = interiorNodes.find(n => n.tags.includes('floor'));
-  const floorMaterial   = floorNode?.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
-  const floorRelational = floorNode?.tags.find(t => TAGS[t]?.division === 'relational') ?? '';
-
-  const PREP = { below: 'underfoot', above: 'overhead', lateral: 'around you' };
-  const floorPrep = PREP[floorRelational] ?? '';
-
-  // Ambient line.
-  const ambient = `A ${topMaterial} ${scaleTag}, ${floorMaterial} ${floorPrep}.`;
-
-  // Callout — highest scoring non-floor node above threshold, weighted by distance.
-  const callout = nodeScores
-    .filter(n => !n.tags.includes('floor') && n.score >= CALLOUT_THRESHOLD)
-    .sort((a, b) => b.score - a.score)[0] ?? null;
-
-  let calloutLine = '';
-  if (callout) {
-    const struct = callout.tags.find(t => TAGS[t]?.division === 'structural') ?? '';
-    const mat    = callout.tags.find(t => TAGS[t]?.division === 'cosmetic') ?? '';
-    calloutLine  = `There is a ${mat} ${struct}.`;
-  }
-
-  return [ambient, calloutLine].filter(Boolean).join(' ');
+// Returns the z distance between a node and the player's current node.
+// Used by perception to apply vertical falloff separately from horizontal.
+function zDistanceFromPlayer(nodeId) {
+  const player = NODES.find(n => n.id === PLAYER_NODE);
+  const target = NODES.find(n => n.id === nodeId);
+  return zDistance(player, target);
 }
