@@ -27,4 +27,4 @@ const DIVISION_BONUS = {
   scale:      0.0,
 };
 
-const CALLOUT_THRESHOLD = 4.5;
+const CALLOUT_THRESHOLD = 2.0;
